@@ -1,6 +1,6 @@
 {
   "name": "brektra-cli",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Run AI app security scans from your terminal",
   "license": "MIT",
   "homepage": "https://brektra.com/docs/cli",
