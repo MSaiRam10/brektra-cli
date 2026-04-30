@@ -1,0 +1,47 @@
+{
+  "name": "brektra-cli",
+  "version": "0.1.0",
+  "description": "Run AI app security scans from your terminal",
+  "license": "MIT",
+  "homepage": "https://brektra.com/docs/cli",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MSaiRam10/brektra-cli.git"
+  },
+  "bugs": {
+    "url": "https://github.com/MSaiRam10/brektra-cli/issues"
+  },
+  "keywords": [
+    "security",
+    "ai",
+    "llm",
+    "pentest",
+    "cli",
+    "brektra",
+    "owasp"
+  ],
+  "type": "module",
+  "bin": {
+    "brektra": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "picocolors": "^1.1.0",
+    "open": "^10.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "typescript": "^5.5.0"
+  }
+}
