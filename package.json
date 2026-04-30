@@ -22,7 +22,7 @@
   ],
   "type": "module",
   "bin": {
-    "brektra": "./dist/index.js"
+    "brektra": "dist/index.js"
   },
   "files": [
     "dist",
