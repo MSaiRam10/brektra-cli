@@ -1,9 +1,10 @@
 import pc from "picocolors";
+import { VERSION } from "./version.js";
 
 export function header(target: string, mode: string, surfaces: string[]) {
   console.log("");
   console.log(
-    `  ${pc.bold("Brektra")}  ${pc.gray(`v0.1.0`)}  ${mode === "safe" ? pc.green("Safe Mode") : pc.red("Aggressive")}  ${pc.gray(surfaces.join(" / "))}`,
+    `  ${pc.bold("Brektra")}  ${pc.gray(`v${VERSION}`)}  ${mode === "safe" ? pc.green("Safe Mode") : pc.red("Aggressive")}  ${pc.gray(surfaces.join(" / "))}`,
   );
   console.log("");
   console.log(pc.gray(`  target  ${target}`));

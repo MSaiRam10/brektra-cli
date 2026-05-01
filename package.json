@@ -1,7 +1,7 @@
 {
   "name": "brektra-cli",
-  "version": "0.1.1",
-  "description": "Run AI app security scans from your terminal",
+  "version": "0.2.0",
+  "description": "Run security scans across web, AI, cloud, CI/CD, mobile, and network surfaces from your terminal",
   "license": "MIT",
   "homepage": "https://brektra.com/docs/cli",
   "repository": {
@@ -18,7 +18,11 @@
     "pentest",
     "cli",
     "brektra",
-    "owasp"
+    "owasp",
+    "cloud-security",
+    "cicd-security",
+    "mobile-security",
+    "compliance"
   ],
   "type": "module",
   "bin": {
