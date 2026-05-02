@@ -1,5 +1,6 @@
 import pc from "picocolors";
 import * as r from "./render.js";
+import { isLoopback, sanitizeForDisplay } from "./safety.js";
 
 // best-effort local scanner. probes a handful of common AI app endpoints
 // with safe-mode payloads and reports what came back. no replay link, no
@@ -26,7 +27,21 @@ const PROMPT_INJECTION_PROBES = [
 ];
 
 export async function runLocalScan(target: string, mode: "safe" | "aggressive") {
-  r.header(target, mode, ["ai"]);
+  // SECURITY (defense in depth): even though the only caller checks for
+  // loopback before dispatching here, runLocalScan is exported. Refuse
+  // to send unauthenticated probes to a non-loopback host.
+  let parsed: URL;
+  try {
+    parsed = new URL(target);
+  } catch {
+    console.error(pc.red("invalid target url"));
+    process.exit(1);
+  }
+  if (!isLoopback(parsed.hostname)) {
+    console.error(pc.red("local scan refuses non-loopback targets"));
+    process.exit(1);
+  }
+  r.header(sanitizeForDisplay(target), mode, ["ai"]);
   const found = await discoverEndpoint(target);
   if (!found) {
     r.info(pc.yellow("no chat endpoint detected at common paths"));
@@ -49,10 +64,13 @@ export async function runLocalScan(target: string, mode: "safe" | "aggressive") 
   for (const probe of PROMPT_INJECTION_PROBES) {
     let bodyText = "";
     try {
+      // SECURITY: bound the request so a hung local app can't pin the
+      // CLI process indefinitely.
       const res = await fetch(found, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ message: probe.body, prompt: probe.body }),
+        signal: AbortSignal.timeout(15_000),
       });
       bodyText = await res.text();
     } catch (e) {
@@ -97,12 +115,11 @@ async function discoverEndpoint(base: string): Promise<string | null> {
   for (const p of COMMON_ENDPOINTS) {
     const url = trimmed + p;
     try {
-      const r = await fetch(url, { method: "OPTIONS" });
+      const r = await fetch(url, { method: "OPTIONS", signal: AbortSignal.timeout(5_000) });
       if (r.status < 500) return url;
     } catch {
       // not listening here, keep going
     }
   }
-  // TODO: pretty-print json bodies properly when discovery returns json
   return null;
 }

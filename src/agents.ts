@@ -1,6 +1,7 @@
 import pc from "picocolors";
 import { requireApiKey } from "./auth.js";
 import { listAgentUpdates, listAgents } from "./api.js";
+import { sanitizeForDisplay } from "./safety.js";
 
 export async function runAgents(rest: string[]) {
   const sub = rest[0];
@@ -32,14 +33,16 @@ async function runList() {
   }
   console.log("");
   for (const a of agents) {
+    // SECURITY: escape server-supplied strings before display so a compromised
+    // backend can't inject ANSI escapes into the user's terminal.
     const status =
       a.status === "online" ? pc.green(a.status) : a.status === "degraded" ? pc.yellow(a.status) : pc.gray(a.status);
-    console.log(`  ${pc.bold(a.name)}  ${pc.gray(a.id)}`);
-    console.log(`    ${pc.gray("version  ")} ${a.version}`);
+    console.log(`  ${pc.bold(sanitizeForDisplay(a.name))}  ${pc.gray(sanitizeForDisplay(a.id))}`);
+    console.log(`    ${pc.gray("version  ")} ${sanitizeForDisplay(a.version)}`);
     console.log(`    ${pc.gray("status   ")} ${status}`);
-    console.log(`    ${pc.gray("seen     ")} ${a.last_seen}`);
+    console.log(`    ${pc.gray("seen     ")} ${sanitizeForDisplay(a.last_seen)}`);
     if (a.capabilities.length) {
-      console.log(`    ${pc.gray("caps     ")} ${a.capabilities.join(", ")}`);
+      console.log(`    ${pc.gray("caps     ")} ${a.capabilities.map(sanitizeForDisplay).join(", ")}`);
     }
     console.log("");
   }
@@ -61,7 +64,7 @@ async function runUpdates() {
   console.log("");
   for (const u of updates) {
     console.log(
-      `  ${pc.bold(u.agent_id)}  ${pc.gray(u.current_version)} -> ${pc.cyan(u.available_version)}  ${pc.gray(`(${u.channel})`)}`,
+      `  ${pc.bold(sanitizeForDisplay(u.agent_id))}  ${pc.gray(sanitizeForDisplay(u.current_version))} -> ${pc.cyan(sanitizeForDisplay(u.available_version))}  ${pc.gray(`(${sanitizeForDisplay(u.channel)})`)}`,
     );
   }
   console.log("");

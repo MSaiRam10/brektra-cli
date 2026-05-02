@@ -2,6 +2,7 @@ import pc from "picocolors";
 import { requireApiKey } from "./auth.js";
 import { Surface } from "./api.js";
 import { emitFindings, emitSummary, exitForFindings, runAndPoll } from "./scan.js";
+import { sanitizeForDisplay } from "./safety.js";
 
 const VALID_SURFACES: Surface[] = ["web", "ai", "cloud", "cicd", "mobile", "host"];
 
@@ -16,13 +17,29 @@ export async function runCi(rest: string[]) {
     console.error(pc.red("usage: brektra ci scan <target> [flags]"));
     process.exit(1);
   }
+  // SECURITY: target shape check so control chars can't be logged or
+  // forwarded; URL parse rejects javascript:/file:/etc.
+  if (target.length > 2048 || /[\x00-\x1f\x7f]/.test(target)) {
+    console.error(pc.red("invalid target"));
+    process.exit(1);
+  }
+  try {
+    const u = new URL(target);
+    if (u.protocol !== "http:" && u.protocol !== "https:") throw new Error();
+  } catch {
+    console.error(pc.red("ci target must be an http(s) url"));
+    process.exit(1);
+  }
   const flags = parseFlags(rest.slice(2));
   const mode = (flags.mode === "aggressive" ? "aggressive" : "safe") as "safe" | "aggressive";
   const surfaces = parseSurfaces(flags.surfaces);
 
   await requireApiKey();
 
-  console.log(pc.gray("*"), `CI scan starting on ${pc.cyan(target)}  surfaces=${surfaces.join(",")}  mode=${mode}`);
+  console.log(
+    pc.gray("*"),
+    `CI scan starting on ${pc.cyan(sanitizeForDisplay(target))}  surfaces=${surfaces.join(",")}  mode=${mode}`,
+  );
 
   const last = await runAndPoll({ target, mode, surfaces });
   emitFindings(last);

@@ -131,7 +131,14 @@ docs: https://brektra.com/docs/cli
 }
 
 main().catch((err) => {
-  // top-level errors are messy on purpose, just dump and exit
-  console.error(pc.red("error:"), err?.message ?? err);
+  // SECURITY: never print stack traces by default — they can contain
+  // file paths, query strings, and (via wrapped fetch errors) bearer-
+  // shaped tokens. BREKTRA_DEBUG=1 opts the user into the verbose form.
+  const msg = err?.message ?? String(err);
+  if (process.env.BREKTRA_DEBUG === "1" && err?.stack) {
+    console.error(pc.red("error:"), err.stack);
+  } else {
+    console.error(pc.red("error:"), msg);
+  }
   process.exit(1);
 });

@@ -1,4 +1,5 @@
 import { apiBase, loadConfig } from "./config.js";
+import { MAX_ARTIFACT_BYTES, redactErrorBody, validateArtifactPath } from "./safety.js";
 
 export type Surface = "web" | "ai" | "cloud" | "cicd" | "mobile" | "host";
 export type Severity = "info" | "low" | "medium" | "high" | "critical";
@@ -80,13 +81,23 @@ async function authedFetch(path: string, init: RequestInit = {}): Promise<Respon
   if (!headers.has("content-type") && init.body) {
     headers.set("content-type", "application/json");
   }
-  return fetch(`${apiBase(cfg)}${path}`, { ...init, headers });
+  // apiBase() validates the destination scheme/host so the bearer token
+  // can't be sent to javascript:/file:/data: or plain http:// non-loopback.
+  return fetch(`${apiBase(cfg)}${path}`, {
+    ...init,
+    headers,
+    // 60s default per HTTP request — prevents indefinite hangs leaking
+    // process resources and gives polling loops a predictable timeout.
+    signal: init.signal ?? AbortSignal.timeout(60_000),
+  });
 }
 
 async function jsonOrThrow<T>(label: string, r: Response): Promise<T> {
   if (!r.ok) {
-    const t = await r.text().catch(() => "");
-    throw new Error(`${label} ${r.status}: ${t || r.statusText}`);
+    // SECURITY: server error bodies can echo request headers (including
+    // Authorization) or PII. Redact bearer-shaped tokens and truncate.
+    const raw = await r.text().catch(() => "");
+    throw new Error(`${label} ${r.status}: ${redactErrorBody(raw) || r.statusText}`);
   }
   return (await r.json()) as T;
 }
@@ -119,8 +130,26 @@ export async function startAtlasRun(opts: {
 }
 
 export async function uploadMobileArtifact(filePath: string): Promise<{ artifact_id: string }> {
+  validateArtifactPath(filePath);
   const { promises: fs } = await import("node:fs");
   const { basename } = await import("node:path");
+
+  // SECURITY: refuse symlinks (avoid the user accidentally pointing at a
+  // symlink whose target is a sensitive file like ~/.aws/credentials)
+  // and enforce a hard size cap so a typo can't read & ship a 50GB file.
+  const st = await fs.lstat(filePath);
+  if (st.isSymbolicLink()) {
+    throw new Error("refusing to upload a symlink as a mobile artifact");
+  }
+  if (!st.isFile()) {
+    throw new Error("mobile artifact path is not a regular file");
+  }
+  if (st.size > MAX_ARTIFACT_BYTES) {
+    throw new Error(
+      `mobile artifact too large: ${st.size} bytes (max ${MAX_ARTIFACT_BYTES})`,
+    );
+  }
+
   const buf = await fs.readFile(filePath);
   const blob = new Blob([new Uint8Array(buf)]);
   const form = new FormData();
@@ -128,10 +157,13 @@ export async function uploadMobileArtifact(filePath: string): Promise<{ artifact
   const cfg = await loadConfig();
   const headers = new Headers();
   if (cfg.api_key) headers.set("authorization", `Bearer ${cfg.api_key}`);
+  // apiBase() asserts https:// for non-loopback hosts before we ship the
+  // artifact + bearer over the network.
   const r = await fetch(`${apiBase(cfg)}/api/v1/artifacts/mobile`, {
     method: "POST",
     body: form,
     headers,
+    signal: AbortSignal.timeout(10 * 60 * 1000),
   });
   return jsonOrThrow("uploadMobileArtifact", r);
 }

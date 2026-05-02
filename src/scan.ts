@@ -12,6 +12,7 @@ import {
 } from "./api.js";
 import * as r from "./render.js";
 import { runLocalScan } from "./local-scan.js";
+import { sanitizeForDisplay, validateBearerLike } from "./safety.js";
 
 type Flags = Record<string, string | boolean>;
 
@@ -50,7 +51,56 @@ export async function runScanCommand(rest: string[]) {
     console.error(pc.red(`usage: brektra scan ${surface} <target>`));
     process.exit(1);
   }
+  // SECURITY: validate target shape per surface so we don't pass control
+  // characters or hostile schemes through to logging or to the backend.
+  try {
+    validateTarget(surface, target);
+  } catch (e) {
+    console.error(pc.red((e as Error).message));
+    process.exit(1);
+  }
   await dispatch(surface, target, parseFlags(rest.slice(2)));
+}
+
+function validateTarget(surface: Surface, target: string): void {
+  if (target.length > 2048) throw new Error("target too long");
+  if (/[\x00-\x1f\x7f]/.test(target)) {
+    // newlines/control chars in a logged target enable terminal-injection
+    // and log forging. reject before display.
+    throw new Error("target contains control characters");
+  }
+  if (surface === "web" || surface === "ai") {
+    if (!/^https?:\/\//i.test(target)) throw new Error(`${surface} target must be an http(s) url`);
+    // delegate full parse to URL — throws on malformed input
+    new URL(target);
+    return;
+  }
+  if (surface === "host") {
+    // accept CIDR, ip, or hostname. strict charset.
+    if (!/^[A-Za-z0-9.:_\-/]{1,256}$/.test(target)) {
+      throw new Error("host target must be an ip, hostname, or cidr");
+    }
+    return;
+  }
+  if (surface === "cloud") {
+    if (!/^(aws|gcp|azure|k8s)$/.test(target)) {
+      throw new Error("cloud provider must be one of: aws, gcp, azure, k8s");
+    }
+    return;
+  }
+  if (surface === "cicd") {
+    if (!/^(github|gitlab|circleci|jenkins|bitbucket|azure-devops)$/.test(target)) {
+      throw new Error("cicd platform must be one of: github, gitlab, circleci, jenkins, bitbucket, azure-devops");
+    }
+    return;
+  }
+  if (surface === "mobile") {
+    // path validation happens at upload time (extension, symlink, size)
+    if (!/[A-Za-z0-9._\-/\\: ]{1,1024}/.test(target)) {
+      throw new Error("invalid mobile artifact path");
+    }
+    return;
+  }
 }
 
 async function dispatch(surface: Surface, target: string, flags: Flags) {
@@ -80,7 +130,9 @@ async function dispatch(surface: Surface, target: string, flags: Flags) {
     }
   }
 
-  r.header(resolvedTarget, mode, [surface]);
+  // sanitize before display: a hostile target with embedded \r\n would
+  // otherwise inject forged log lines into the user's terminal.
+  r.header(sanitizeForDisplay(resolvedTarget), mode, [surface]);
   r.info(`Starting ${surface} scan`);
 
   const startOpts: ScanStartOpts = {
@@ -119,9 +171,24 @@ function collectSurfaceOptions(surface: Surface, flags: Flags): Record<string, u
   }
 
   if (surface === "cicd") {
-    if (typeof flags["github-token"] === "string") opts.github_token = flags["github-token"];
-    if (typeof flags["gitlab-token"] === "string") opts.gitlab_token = flags["gitlab-token"];
-    if (typeof flags["jenkins-url"] === "string") opts.jenkins_url = flags["jenkins-url"];
+    // SECURITY: bearer-shape validate, and warn that argv-supplied tokens
+    // are visible in process listings — recommend env var passthrough.
+    if (typeof flags["github-token"] === "string") {
+      warnArgvSecret("--github-token");
+      opts.github_token = validateBearerLike("github-token", flags["github-token"]);
+    }
+    if (typeof flags["gitlab-token"] === "string") {
+      warnArgvSecret("--gitlab-token");
+      opts.gitlab_token = validateBearerLike("gitlab-token", flags["gitlab-token"]);
+    }
+    if (typeof flags["jenkins-url"] === "string") {
+      // jenkins-url is a URL, not a secret — but still strip control chars
+      const u = new URL(flags["jenkins-url"]);
+      if (u.protocol !== "https:" && !/^https?:$/.test(u.protocol)) {
+        throw new Error("--jenkins-url must be http(s)");
+      }
+      opts.jenkins_url = u.toString();
+    }
   }
 
   if (surface === "web") {
@@ -164,11 +231,15 @@ export async function runAndPoll(opts: ScanStartOpts): Promise<CiScanResponse> {
 
 export function emitFindings(last: CiScanResponse) {
   for (const f of last.findings ?? []) {
-    r.attackSuccess(f.title);
+    // server-supplied finding fields are escaped before display — see
+    // playbooks.ts for the same rationale (terminal/ANSI injection).
+    const title = sanitizeForDisplay(f.title);
+    const cat = sanitizeForDisplay(f.category);
+    r.attackSuccess(title);
     r.findingProof({
-      title: f.title,
+      title,
       severity: f.severity,
-      owasp: f.category.startsWith("LLM") || f.category.startsWith("A0") ? f.category : null,
+      owasp: cat.startsWith("LLM") || cat.startsWith("A0") ? cat : null,
     });
   }
 }
@@ -183,6 +254,18 @@ export function emitSummary(last: CiScanResponse, startMs?: number) {
     },
     { high: 0, medium: 0, low: 0 },
   );
+  // Replay URL is server-controlled. Validate it as http(s) before
+  // printing so a poisoned response can't trick the user into pasting a
+  // javascript:/file: url into their browser.
+  let safeReplay: string | null | undefined = last.replay_url;
+  if (safeReplay) {
+    try {
+      const u = new URL(safeReplay);
+      if (u.protocol !== "http:" && u.protocol !== "https:") safeReplay = null;
+    } catch {
+      safeReplay = null;
+    }
+  }
   r.summary({
     findings: last.findings_count ?? last.findings?.length ?? 0,
     high: sevs.high,
@@ -190,7 +273,7 @@ export function emitSummary(last: CiScanResponse, startMs?: number) {
     low: sevs.low,
     durationSec:
       last.duration_seconds ?? (startMs ? Math.round((Date.now() - startMs) / 1000) : 0),
-    replayUrl: last.replay_url,
+    replayUrl: safeReplay ? sanitizeForDisplay(safeReplay) : undefined,
   });
 }
 
@@ -237,4 +320,18 @@ function parseFlags(rest: string[]): Flags {
 
 function sleep(ms: number) {
   return new Promise((res) => setTimeout(res, ms));
+}
+
+let warnedAboutArgv = false;
+function warnArgvSecret(flag: string): void {
+  // Tokens passed on the command line are visible to anything reading
+  // /proc/<pid>/cmdline, ps, Windows Task Manager, parent shell history,
+  // and any process snapshot. We can't unleak it, but we can warn once.
+  if (warnedAboutArgv) return;
+  warnedAboutArgv = true;
+  console.warn(
+    pc.yellow(
+      `warning: secret passed on argv via ${flag} is visible in process listings; prefer piping via env or stdin`,
+    ),
+  );
 }

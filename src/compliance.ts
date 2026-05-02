@@ -1,6 +1,7 @@
 import pc from "picocolors";
 import { requireApiKey } from "./auth.js";
 import { getComplianceExport, startComplianceExport } from "./api.js";
+import { assertSafeOpenUrl, sanitizeForDisplay } from "./safety.js";
 
 const FRAMEWORKS = ["soc2", "pci", "hipaa", "iso", "nist", "gdpr", "fedramp"];
 
@@ -50,7 +51,17 @@ export async function runCompliance(rest: string[]) {
     process.exit(1);
   }
   if (last.download_url) {
-    console.log(pc.green("ready"), pc.cyan(last.download_url));
+    // SECURITY: validate the server-supplied URL before printing — refuse
+    // any non-http(s) scheme so a poisoned response can't trick a copy-paste
+    // user into launching javascript:/file:/etc.
+    let safe: string;
+    try {
+      safe = assertSafeOpenUrl(last.download_url);
+    } catch (e) {
+      console.error(pc.red("server returned unsafe download url:"), (e as Error).message);
+      process.exit(1);
+    }
+    console.log(pc.green("ready"), pc.cyan(sanitizeForDisplay(safe)));
   } else {
     console.log(pc.green("ready"), pc.gray("(no download url)"));
   }
