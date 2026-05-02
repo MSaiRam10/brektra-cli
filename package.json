@@ -1,6 +1,6 @@
 {
   "name": "brektra-cli",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Run security scans across web, AI, cloud, CI/CD, mobile, and network surfaces from your terminal",
   "license": "MIT",
   "homepage": "https://brektra.com/docs/cli",
