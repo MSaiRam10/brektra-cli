@@ -34,9 +34,16 @@ async function runList() {
   console.log("");
   for (const a of agents) {
     // SECURITY: escape server-supplied strings before display so a compromised
-    // backend can't inject ANSI escapes into the user's terminal.
+    // backend can't inject ANSI escapes. Even the strict-equality branches
+    // re-render the value through the colorizer, so we sanitize before
+    // colorizing rather than trusting the equality match.
+    const safeStatus = sanitizeForDisplay(String(a.status));
     const status =
-      a.status === "online" ? pc.green(a.status) : a.status === "degraded" ? pc.yellow(a.status) : pc.gray(a.status);
+      a.status === "online"
+        ? pc.green(safeStatus)
+        : a.status === "degraded"
+          ? pc.yellow(safeStatus)
+          : pc.gray(safeStatus);
     console.log(`  ${pc.bold(sanitizeForDisplay(a.name))}  ${pc.gray(sanitizeForDisplay(a.id))}`);
     console.log(`    ${pc.gray("version  ")} ${sanitizeForDisplay(a.version)}`);
     console.log(`    ${pc.gray("status   ")} ${status}`);

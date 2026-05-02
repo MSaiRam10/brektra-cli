@@ -10,7 +10,7 @@ import { runPlaybook } from "./playbooks.js";
 import { runCompliance } from "./compliance.js";
 import { runCi } from "./ci.js";
 import { VERSION } from "./version.js";
-import { redactErrorBody } from "./safety.js";
+import { parseFlagsSafe, redactErrorBody, sanitizeForDisplay } from "./safety.js";
 
 async function main() {
   const argv = process.argv.slice(2);
@@ -36,7 +36,7 @@ async function main() {
         console.error(pc.red("usage: brektra atlas <pattern> --target <url>"));
         process.exit(1);
       }
-      await runAtlas(slug, parseFlags(rest.slice(1)));
+      await runAtlas(slug, parseFlagsSafe(rest.slice(1)));
       return;
     }
     case "ci":
@@ -68,29 +68,12 @@ async function main() {
       return;
     }
     default:
-      console.error(pc.red(`unknown command: ${cmd}`));
+      // SECURITY: sanitize before display — `cmd` is user-supplied argv
+      // and could otherwise smuggle ANSI escapes into the log line.
+      console.error(pc.red(`unknown command: ${sanitizeForDisplay(String(cmd)).slice(0, 64)}`));
       printHelp();
       process.exit(1);
   }
-}
-
-function parseFlags(rest: string[]): Record<string, string | boolean> {
-  const out: Record<string, string | boolean> = {};
-  for (let i = 0; i < rest.length; i++) {
-    const a = rest[i];
-    if (!a) continue;
-    if (a.startsWith("--")) {
-      const k = a.slice(2);
-      const next = rest[i + 1];
-      if (next && !next.startsWith("--")) {
-        out[k] = next;
-        i++;
-      } else {
-        out[k] = true;
-      }
-    }
-  }
-  return out;
 }
 
 function printHelp() {

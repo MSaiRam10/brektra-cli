@@ -13,6 +13,7 @@ import {
 import * as r from "./render.js";
 import { runLocalScan } from "./local-scan.js";
 import {
+  parseFlagsSafe,
   sanitizeForDisplay,
   stripUserInfo,
   validateBearerLike,
@@ -38,9 +39,18 @@ export async function runScanCommand(rest: string[]) {
     process.exit(1);
   }
 
-  // legacy form: `brektra scan https://example.com` is treated as a web scan
+  // legacy form: `brektra scan https://example.com` is treated as a web scan.
+  // SECURITY: must validate the target on this branch too — without
+  // this, control chars / userinfo would otherwise bypass the per-surface
+  // checks that the explicit form runs.
   if (/^https?:\/\//i.test(first)) {
-    await dispatch("web", first, parseFlags(rest.slice(1)));
+    try {
+      validateTarget("web", first);
+    } catch (e) {
+      console.error(pc.red((e as Error).message));
+      process.exit(1);
+    }
+    await dispatch("web", first, parseFlagsSafe(rest.slice(1)));
     return;
   }
 
@@ -64,7 +74,7 @@ export async function runScanCommand(rest: string[]) {
     console.error(pc.red((e as Error).message));
     process.exit(1);
   }
-  await dispatch(surface, target, parseFlags(rest.slice(2)));
+  await dispatch(surface, target, parseFlagsSafe(rest.slice(2)));
 }
 
 function validateTarget(surface: Surface, target: string): void {
@@ -212,10 +222,16 @@ function collectSurfaceOptions(surface: Surface, flags: Flags): Record<string, u
       opts.gitlab_token = validateBearerLike("gitlab-token", flags["gitlab-token"]);
     }
     if (typeof flags["jenkins-url"] === "string") {
-      // jenkins-url is a URL, not a secret — but still strip control chars
+      // SECURITY: parse, require http(s), strip embedded user:pass so
+      // the URL we forward to the backend / display in logs cannot
+      // carry credentials.
       const u = new URL(flags["jenkins-url"]);
-      if (u.protocol !== "https:" && !/^https?:$/.test(u.protocol)) {
+      if (u.protocol !== "http:" && u.protocol !== "https:") {
         throw new Error("--jenkins-url must be http(s)");
+      }
+      if (u.username || u.password) {
+        u.username = "";
+        u.password = "";
       }
       opts.jenkins_url = u.toString();
     }
@@ -327,25 +343,6 @@ function parseSeverityThreshold(v: string | boolean | undefined): number | null 
   if (k in SEVERITY_RANK) return SEVERITY_RANK[k];
   console.error(pc.red(`invalid --fail-on-severity: ${v} (use info|low|medium|high|critical)`));
   process.exit(1);
-}
-
-function parseFlags(rest: string[]): Flags {
-  const out: Flags = {};
-  for (let i = 0; i < rest.length; i++) {
-    const a = rest[i];
-    if (!a) continue;
-    if (a.startsWith("--")) {
-      const k = a.slice(2);
-      const next = rest[i + 1];
-      if (next && !next.startsWith("--")) {
-        out[k] = next;
-        i++;
-      } else {
-        out[k] = true;
-      }
-    }
-  }
-  return out;
 }
 
 function sleep(ms: number) {

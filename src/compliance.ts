@@ -28,7 +28,12 @@ export async function runCompliance(rest: string[]) {
     process.exit(1);
   }
 
-  console.log(pc.gray("*"), `Export queued for ${pc.cyan(framework)} (${pc.gray(exp.id)})`);
+  // SECURITY: sanitize the server-supplied id before rendering so a
+  // hostile backend can't smuggle ANSI escapes through this status line.
+  console.log(
+    pc.gray("*"),
+    `Export queued for ${pc.cyan(framework)} (${pc.gray(sanitizeForDisplay(String(exp.id)).slice(0, 128))})`,
+  );
 
   const start = Date.now();
   const timeoutMs = 5 * 60 * 1000;

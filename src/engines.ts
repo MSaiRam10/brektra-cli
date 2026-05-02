@@ -25,8 +25,13 @@ export async function runEngines(rest: string[]) {
   for (const e of engines) {
     // SECURITY: same display-escape rationale as agents — server fields
     // pass through sanitizeForDisplay so they can't smuggle ANSI escapes.
+    const safeStatus = sanitizeForDisplay(String(e.status));
     const status =
-      e.status === "online" ? pc.green(e.status) : e.status === "degraded" ? pc.yellow(e.status) : pc.gray(e.status);
+      e.status === "online"
+        ? pc.green(safeStatus)
+        : e.status === "degraded"
+          ? pc.yellow(safeStatus)
+          : pc.gray(safeStatus);
     console.log(`  ${pc.bold(sanitizeForDisplay(e.name))}  ${pc.gray(sanitizeForDisplay(e.id))}`);
     console.log(`    ${pc.gray("version  ")} ${sanitizeForDisplay(e.version)}`);
     console.log(`    ${pc.gray("status   ")} ${status}`);

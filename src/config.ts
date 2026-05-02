@@ -46,13 +46,30 @@ export async function saveConfig(cfg: Cfg): Promise<void> {
   // Use fs.open with O_CREAT|O_EXCL|O_WRONLY so we get a fresh file with
   // strict mode — no pre-existing TOCTOU on the path.
   const fh = await fs.open(tmp, fsc.O_CREAT | fsc.O_EXCL | fsc.O_WRONLY, 0o600);
+  let renamed = false;
   try {
     await fh.writeFile(payload);
     if (platform() !== "win32") await fh.chmod(0o600);
-  } finally {
     await fh.close();
+    await fs.rename(tmp, CFG_PATH);
+    renamed = true;
+  } finally {
+    if (!renamed) {
+      // SECURITY: on any failure path, ensure the partial tempfile (which
+      // may contain the api key) is removed and not left around for other
+      // processes to read once the directory mode loosens.
+      try {
+        await fh.close();
+      } catch {
+        /* already closed */
+      }
+      try {
+        await fs.unlink(tmp);
+      } catch {
+        /* nothing to clean */
+      }
+    }
   }
-  await fs.rename(tmp, CFG_PATH);
 }
 
 export function apiBase(cfg: Cfg): string {

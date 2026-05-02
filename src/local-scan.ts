@@ -72,7 +72,11 @@ export async function runLocalScan(target: string, mode: "safe" | "aggressive") 
         body: JSON.stringify({ message: probe.body, prompt: probe.body }),
         signal: AbortSignal.timeout(15_000),
       });
-      bodyText = await res.text();
+      // SECURITY: cap the response read at 64 KiB. `await res.text()` is
+      // unbounded; a hostile local app could pipe a multi-GB stream and
+      // either OOM the CLI or feed an unbounded string into the regex
+      // success-checks below.
+      bodyText = await readBodyCapped(res, 64 * 1024);
     } catch (e) {
       // local apps that crash mid-prompt are interesting but we don't claim a finding
       console.warn(pc.gray(`  (${probe.name} crashed the endpoint: ${(e as Error).message})`));
@@ -112,6 +116,45 @@ export async function runLocalScan(target: string, mode: "safe" | "aggressive") 
   });
 
   if (findings.length > 0) process.exit(2);
+}
+
+async function readBodyCapped(res: Response, maxBytes: number): Promise<string> {
+  // SECURITY: read at most `maxBytes` from the response body, then abort.
+  // Falls back to an empty string if the body is not readable.
+  const reader = res.body?.getReader?.();
+  if (!reader) return "";
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+      const remaining = maxBytes - total;
+      if (remaining <= 0) {
+        try {
+          await reader.cancel();
+        } catch {
+          /* ignore */
+        }
+        break;
+      }
+      const slice = value.length > remaining ? value.subarray(0, remaining) : value;
+      chunks.push(slice);
+      total += slice.length;
+      if (total >= maxBytes) {
+        try {
+          await reader.cancel();
+        } catch {
+          /* ignore */
+        }
+        break;
+      }
+    }
+  } catch {
+    /* network errors fall through with whatever was read */
+  }
+  return new TextDecoder("utf-8", { fatal: false }).decode(Buffer.concat(chunks.map((c) => Buffer.from(c))));
 }
 
 async function discoverEndpoint(base: string): Promise<string | null> {

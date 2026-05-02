@@ -2,7 +2,7 @@ import pc from "picocolors";
 import { requireApiKey } from "./auth.js";
 import { Surface } from "./api.js";
 import { emitFindings, emitSummary, exitForFindings, runAndPoll } from "./scan.js";
-import { sanitizeForDisplay, stripUserInfo } from "./safety.js";
+import { parseFlagsSafe, sanitizeForDisplay, stripUserInfo } from "./safety.js";
 
 const VALID_SURFACES: Surface[] = ["web", "ai", "cloud", "cicd", "mobile", "host"];
 
@@ -36,7 +36,7 @@ export async function runCi(rest: string[]) {
     process.exit(1);
   }
   const cleanTarget = stripUserInfo(target);
-  const flags = parseFlags(rest.slice(2));
+  const flags = parseFlagsSafe(rest.slice(2));
   const mode = (flags.mode === "aggressive" ? "aggressive" : "safe") as "safe" | "aggressive";
   const surfaces = parseSurfaces(flags.surfaces);
 
@@ -69,21 +69,3 @@ function parseSurfaces(v: string | boolean | undefined): Surface[] {
   return parts as Surface[];
 }
 
-function parseFlags(rest: string[]): Record<string, string | boolean> {
-  const out: Record<string, string | boolean> = {};
-  for (let i = 0; i < rest.length; i++) {
-    const a = rest[i];
-    if (!a) continue;
-    if (a.startsWith("--")) {
-      const k = a.slice(2);
-      const next = rest[i + 1];
-      if (next && !next.startsWith("--")) {
-        out[k] = next;
-        i++;
-      } else {
-        out[k] = true;
-      }
-    }
-  }
-  return out;
-}

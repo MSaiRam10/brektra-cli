@@ -28,6 +28,19 @@ export function assertSafeApiBase(rawUrl: string): URL {
       `refusing to send credentials over http:// to ${u.hostname} — use https:// or a localhost dev base`,
     );
   }
+  // Refuse userinfo in the base. Otherwise:
+  //  - every authedFetch sends HTTP Basic creds alongside the Bearer
+  //  - login()/replay print the URL with embedded user:pass to console
+  //  - those creds end up in shell history and IDE-rendered links
+  if (u.username || u.password) {
+    throw new Error("refusing api base with embedded user:pass; remove the userinfo segment");
+  }
+  // Refuse non-empty path/search/hash. The base is meant to be just
+  // scheme://host[:port]; anything else gets concatenated as-is with
+  // /api/... below and produces malformed routing.
+  if ((u.pathname && u.pathname !== "/") || u.search || u.hash) {
+    throw new Error("api base must be scheme://host[:port] only — no path/query/fragment");
+  }
   return u;
 }
 
@@ -54,12 +67,36 @@ export function assertSafeOpenUrl(rawUrl: string): string {
   return u.toString();
 }
 
+// Token-shape patterns we redact wherever an error body or stack might
+// echo a value back. The list intentionally over-redacts: any future
+// shape that looks like a credential is better redacted than printed.
+const TOKEN_PATTERNS: { name: string; re: RegExp }[] = [
+  { name: "auth-header", re: /(?:authorization|x-api-key|x-auth-token)\s*:\s*[^\s]+/gi },
+  { name: "bearer", re: /Bearer\s+[A-Za-z0-9._\-]+/gi },
+  // Brektra api keys
+  { name: "bk", re: /bk_[A-Za-z0-9._\-]{8,}/g },
+  // GitHub: PATs ghp_, OAuth gho_, user-to-server ghu_, server-to-server ghs_, refresh ghr_
+  { name: "github", re: /\bgh[oprsu]_[A-Za-z0-9]{20,}\b/g },
+  // GitLab personal/project/group access tokens
+  { name: "gitlab", re: /\bglpat-[A-Za-z0-9_\-]{20,}\b/g },
+  // AWS access key ids (AKIA = long-term, ASIA = temporary)
+  { name: "aws-access-key", re: /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g },
+  // Slack tokens (bot, user, app, refresh, oauth)
+  { name: "slack", re: /\bxox[abprs]-[A-Za-z0-9-]{10,}\b/g },
+  // Google API keys
+  { name: "google-api-key", re: /\bAIza[0-9A-Za-z_\-]{35}\b/g },
+  // JSON Web Tokens (3 base64url segments separated by dots)
+  { name: "jwt", re: /\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\b/g },
+  // Generic high-entropy "secret-ish" strings that look like API tokens
+  // Captured last so the named patterns above win.
+  { name: "generic", re: /\b[A-Za-z0-9_\-]{32,}\b/g },
+];
+
 export function redactErrorBody(body: string): string {
-  // strip authorization headers a server may echo back, then truncate
-  const stripped = body
-    .replace(/(?:authorization|x-api-key)\s*:\s*[^\s]+/gi, "[redacted-auth-header]")
-    .replace(/Bearer\s+[A-Za-z0-9._\-]+/gi, "Bearer [redacted]")
-    .replace(/bk_[A-Za-z0-9._\-]+/g, "bk_[redacted]");
+  let stripped = body;
+  for (const { name, re } of TOKEN_PATTERNS) {
+    stripped = stripped.replace(re, `[redacted:${name}]`);
+  }
   return stripped.length > MAX_ERROR_BODY
     ? stripped.slice(0, MAX_ERROR_BODY) + "...[truncated]"
     : stripped;
@@ -176,6 +213,35 @@ export function parseConfigSafely(raw: string): { api_key?: string; api_url?: st
   const out: { api_key?: string; api_url?: string } = {};
   if (typeof obj.api_key === "string") out.api_key = obj.api_key;
   if (typeof obj.api_url === "string") out.api_url = obj.api_url;
+  return out;
+}
+
+// SECURITY: shared flag parser. Uses a null-prototype bag so a flag
+// named --__proto__ / --constructor / --prototype can't reach into the
+// global Object prototype, and explicitly drops those names if present.
+const RESERVED_FLAG_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+export function parseFlagsSafe(rest: string[]): Record<string, string | boolean> {
+  const out = Object.create(null) as Record<string, string | boolean>;
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i];
+    if (!a) continue;
+    if (a.startsWith("--")) {
+      const k = a.slice(2);
+      if (RESERVED_FLAG_KEYS.has(k)) {
+        // ignore reserved keys entirely; consume any value that follows
+        const next = rest[i + 1];
+        if (next && !next.startsWith("--")) i++;
+        continue;
+      }
+      const next = rest[i + 1];
+      if (next && !next.startsWith("--")) {
+        out[k] = next;
+        i++;
+      } else {
+        out[k] = true;
+      }
+    }
+  }
   return out;
 }
 

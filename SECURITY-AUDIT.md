@@ -235,9 +235,81 @@ Additional findings discovered on a second read of the codebase. All fixed in th
 - MEDIUM fixed: **9** (P-M10 – P-M18)
 - Total pass 2: **15**
 
-## Combined counts
+## Combined counts (after pass 2)
 
 - CRITICAL: **7**
 - HIGH: **11**
 - MEDIUM: **18**
 - Total: **36**
+
+---
+
+# Pass 3 — third sweep
+
+Focus this pass: anything that could still leak credentials, tokens, or
+authenticated request paths to console / logs / backend body / OS shell.
+
+## CRITICAL — pass 3
+
+### P3-C8. `assertSafeApiBase` accepted userinfo and non-empty path/query/fragment in the api base
+- **Where**: [src/safety.ts assertSafeApiBase](src/safety.ts).
+- **What was wrong**: a config of `cfg.api_url = "https://attacker:secret@brektra.com"` passed every check. `apiBase()` returned the raw URL; every authedFetch then sent HTTP Basic creds *alongside* the Bearer token, and `login()`/`replay` printed the URL with embedded `user:pass` to the console (where it lands in scrollback and shell history). Non-empty path/query/fragment were also a routing footgun.
+- **Fix**: assertSafeApiBase now refuses any URL where `username`/`password` are set or where `pathname` is anything but `/` or where `search`/`hash` are non-empty. Verified against `https://x:y@brektra.com`.
+
+## HIGH — pass 3
+
+### P3-H12. `redactErrorBody` only redacted `bk_*` and `Bearer …`
+- **Where**: [src/safety.ts redactErrorBody](src/safety.ts).
+- **What was wrong**: a server error body that echoed a GitHub PAT (`ghp_*`/`gho_*`/`ghu_*`/`ghs_*`/`ghr_*`), a GitLab PAT (`glpat-*`), AWS access key ids (`AKIA*`/`ASIA*`), Slack tokens (`xox[abprs]-*`), Google API keys (`AIza*`), or a JWT (`eyJ…`) would be printed verbatim to the user's terminal.
+- **Fix**: `TOKEN_PATTERNS` table now includes every token shape above, plus a generic high-entropy fallback. Each match is replaced with `[redacted:<class>]`.
+
+### P3-H13. Legacy `brektra scan <url>` form bypassed `validateTarget`
+- **Where**: [src/scan.ts runScanCommand](src/scan.ts).
+- **What was wrong**: the legacy single-arg form took the URL straight to `dispatch()` without per-surface validation. Control characters, userinfo, length cap — all skipped. Backend would receive forged-looking targets in the request body.
+- **Fix**: `validateTarget("web", first)` now runs before dispatch on the legacy form too.
+
+### P3-H14. `--jenkins-url` was forwarded with embedded user:pass
+- **Where**: [src/scan.ts collectSurfaceOptions cicd](src/scan.ts).
+- **Fix**: parse, require http(s), strip `username`/`password` before forwarding.
+
+## MEDIUM — pass 3
+
+### P3-M19. `local-scan.ts` `await res.text()` was unbounded
+- **Where**: [src/local-scan.ts](src/local-scan.ts).
+- **Fix**: new `readBodyCapped(res, 64 * 1024)` reads chunks via the body reader, cancels at the cap, and returns at most 64 KiB. Defends against a hostile local app pumping a multi-GB stream into the regex match.
+
+### P3-M20. Compliance `exp.id` printed unsanitized
+- **Where**: [src/compliance.ts](src/compliance.ts).
+- **Fix**: server id passed through `sanitizeForDisplay` and length-capped before rendering.
+
+### P3-M21. Agents/engines status colorized without sanitizing the raw value
+- **Where**: [src/agents.ts](src/agents.ts), [src/engines.ts](src/engines.ts).
+- **What was wrong**: even the strict-equality branches did `pc.green(a.status)` on the raw server string. A hostile backend could send `status: "online\x1b[…"`-style data; even though equality wouldn't match, the fallback branch rendered the raw value.
+- **Fix**: the rendered value is `sanitizeForDisplay(String(a.status))`, decoupled from the equality match.
+
+### P3-M22. `parseFlags` allowed `--__proto__` and used a regular object bag
+- **Where**: previously duplicated in [src/scan.ts](src/scan.ts), [src/ci.ts](src/ci.ts), [src/index.ts](src/index.ts).
+- **Fix**: single shared `parseFlagsSafe` in [src/safety.ts](src/safety.ts) — null-prototype bag, explicit drop of `__proto__`/`constructor`/`prototype` flag names. All three call sites switched over.
+
+### P3-M23. `saveConfig` left tempfile on disk after a write error
+- **Where**: [src/config.ts saveConfig](src/config.ts).
+- **What was wrong**: if `writeFile`/`chmod`/`rename` threw between open and rename, a temp file containing a partial credential payload was left in `~/.brektra/` until the user noticed it.
+- **Fix**: `finally` block now closes and `unlink`s the temp on any non-success path.
+
+### P3-M24. `index.ts` default branch echoed raw unknown-command text
+- **Where**: [src/index.ts](src/index.ts) default case.
+- **Fix**: `sanitizeForDisplay(String(cmd)).slice(0, 64)` — control chars stripped, length capped.
+
+## Counts (pass 3)
+
+- CRITICAL fixed: **1** (P3-C8)
+- HIGH fixed: **3** (P3-H12, P3-H13, P3-H14)
+- MEDIUM fixed: **6** (P3-M19 – P3-M24)
+- Total pass 3: **10**
+
+## Combined counts
+
+- CRITICAL: **8**
+- HIGH: **14**
+- MEDIUM: **24**
+- Total: **46**
