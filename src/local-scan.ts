@@ -81,14 +81,18 @@ export async function runLocalScan(target: string, mode: "safe" | "aggressive") 
     if (probe.success.test(bodyText)) {
       const sec = Math.round((Date.now() - start) / 1000);
       if (firstExploitSec === null) firstExploitSec = sec;
+      // SECURITY: sanitize the response excerpt before passing it to the
+      // renderer — a hostile local app could embed ANSI escapes or a CRLF
+      // sequence to forge log lines / move the cursor in the terminal.
+      const safeExcerpt = sanitizeForDisplay(bodyText.slice(0, 200));
       r.attackSuccess(probe.name, firstExploitSec);
       r.findingProof({
         title: probe.name,
         severity: "high",
         owasp: "LLM01",
-        excerpt: bodyText.slice(0, 200),
+        excerpt: safeExcerpt,
       });
-      findings.push({ name: probe.name, severity: "high", excerpt: bodyText.slice(0, 200) });
+      findings.push({ name: probe.name, severity: "high", excerpt: safeExcerpt });
     } else {
       r.attackFailed(probe.name);
     }

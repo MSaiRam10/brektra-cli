@@ -10,6 +10,7 @@ import { runPlaybook } from "./playbooks.js";
 import { runCompliance } from "./compliance.js";
 import { runCi } from "./ci.js";
 import { VERSION } from "./version.js";
+import { redactErrorBody } from "./safety.js";
 
 async function main() {
   const argv = process.argv.slice(2);
@@ -131,14 +132,17 @@ docs: https://brektra.com/docs/cli
 }
 
 main().catch((err) => {
-  // SECURITY: never print stack traces by default — they can contain
-  // file paths, query strings, and (via wrapped fetch errors) bearer-
-  // shaped tokens. BREKTRA_DEBUG=1 opts the user into the verbose form.
-  const msg = err?.message ?? String(err);
+  // SECURITY: redact bearer-shaped tokens from any error message before
+  // display so an unwrapped error path can't leak the api key or any
+  // GitHub/GitLab/AWS token-shape that found its way into a thrown
+  // Error. Stacks are also bearer-redacted and only shown under
+  // BREKTRA_DEBUG=1 because they can contain file paths and request URLs.
+  const rawMsg = err?.message ?? String(err);
+  const safeMsg = redactErrorBody(rawMsg);
   if (process.env.BREKTRA_DEBUG === "1" && err?.stack) {
-    console.error(pc.red("error:"), err.stack);
+    console.error(pc.red("error:"), redactErrorBody(err.stack));
   } else {
-    console.error(pc.red("error:"), msg);
+    console.error(pc.red("error:"), safeMsg);
   }
   process.exit(1);
 });

@@ -2,7 +2,7 @@ import pc from "picocolors";
 import { requireApiKey } from "./auth.js";
 import { Surface } from "./api.js";
 import { emitFindings, emitSummary, exitForFindings, runAndPoll } from "./scan.js";
-import { sanitizeForDisplay } from "./safety.js";
+import { sanitizeForDisplay, stripUserInfo } from "./safety.js";
 
 const VALID_SURFACES: Surface[] = ["web", "ai", "cloud", "cicd", "mobile", "host"];
 
@@ -26,10 +26,16 @@ export async function runCi(rest: string[]) {
   try {
     const u = new URL(target);
     if (u.protocol !== "http:" && u.protocol !== "https:") throw new Error();
+    if (u.username || u.password) {
+      // SECURITY: refuse user:pass@ in target — would leak to backend body
+      // and to logs.
+      throw new Error("userinfo in target");
+    }
   } catch {
-    console.error(pc.red("ci target must be an http(s) url"));
+    console.error(pc.red("ci target must be an http(s) url with no userinfo"));
     process.exit(1);
   }
+  const cleanTarget = stripUserInfo(target);
   const flags = parseFlags(rest.slice(2));
   const mode = (flags.mode === "aggressive" ? "aggressive" : "safe") as "safe" | "aggressive";
   const surfaces = parseSurfaces(flags.surfaces);
@@ -38,10 +44,10 @@ export async function runCi(rest: string[]) {
 
   console.log(
     pc.gray("*"),
-    `CI scan starting on ${pc.cyan(sanitizeForDisplay(target))}  surfaces=${surfaces.join(",")}  mode=${mode}`,
+    `CI scan starting on ${pc.cyan(sanitizeForDisplay(cleanTarget))}  surfaces=${surfaces.join(",")}  mode=${mode}`,
   );
 
-  const last = await runAndPoll({ target, mode, surfaces });
+  const last = await runAndPoll({ target: cleanTarget, mode, surfaces });
   emitFindings(last);
   emitSummary(last);
   exitForFindings(last, flags);

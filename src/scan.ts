@@ -12,7 +12,12 @@ import {
 } from "./api.js";
 import * as r from "./render.js";
 import { runLocalScan } from "./local-scan.js";
-import { sanitizeForDisplay, validateBearerLike } from "./safety.js";
+import {
+  sanitizeForDisplay,
+  stripUserInfo,
+  validateBearerLike,
+  validateOpaqueArg,
+} from "./safety.js";
 
 type Flags = Record<string, string | boolean>;
 
@@ -72,7 +77,13 @@ function validateTarget(surface: Surface, target: string): void {
   if (surface === "web" || surface === "ai") {
     if (!/^https?:\/\//i.test(target)) throw new Error(`${surface} target must be an http(s) url`);
     // delegate full parse to URL — throws on malformed input
-    new URL(target);
+    const u = new URL(target);
+    // SECURITY: refuse userinfo in the target. http://user:pass@host
+    // would otherwise leak embedded creds to the backend payload, to
+    // logs, and to the OS shell handler if ever passed to open().
+    if (u.username || u.password) {
+      throw new Error("target must not contain userinfo (user:pass@); pass credentials separately");
+    }
     return;
   }
   if (surface === "host") {
@@ -95,8 +106,9 @@ function validateTarget(surface: Surface, target: string): void {
     return;
   }
   if (surface === "mobile") {
-    // path validation happens at upload time (extension, symlink, size)
-    if (!/[A-Za-z0-9._\-/\\: ]{1,1024}/.test(target)) {
+    // SECURITY: anchored regex (the previous unanchored form silently
+    // accepted any input). Path validation also happens at upload time.
+    if (!/^[A-Za-z0-9._\-/\\: ]{1,1024}$/.test(target)) {
       throw new Error("invalid mobile artifact path");
     }
     return;
@@ -116,12 +128,20 @@ async function dispatch(surface: Surface, target: string, flags: Flags) {
 
   const options = collectSurfaceOptions(surface, flags);
 
-  let resolvedTarget = target;
+  // SECURITY: strip any userinfo (user:pass@) from the forwarded/displayed
+  // target so embedded creds don't leak to backend body, console, or logs.
+  let resolvedTarget = stripUserInfo(target);
   let artifactId: string | undefined;
   if (surface === "mobile") {
-    r.info(`Uploading ${pc.cyan(target)} for static analysis`);
+    r.info(`Uploading ${pc.cyan(sanitizeForDisplay(resolvedTarget))} for static analysis`);
     try {
       const up = await uploadMobileArtifact(target);
+      // SECURITY: shape-check the artifact id returned by the server
+      // before embedding it in the resolvedTarget the rest of the flow
+      // logs and forwards.
+      if (!/^[A-Za-z0-9_\-]{1,128}$/.test(up.artifact_id)) {
+        throw new Error("server returned invalid artifact id");
+      }
       artifactId = up.artifact_id;
       resolvedTarget = `mobile://${artifactId}`;
     } catch (e) {
@@ -164,10 +184,20 @@ function collectSurfaceOptions(surface: Surface, flags: Flags): Record<string, u
   }
 
   if (surface === "cloud") {
-    if (typeof flags["aws-profile"] === "string") opts.aws_profile = flags["aws-profile"];
-    if (typeof flags["gcp-creds"] === "string") opts.gcp_creds = flags["gcp-creds"];
-    if (typeof flags["azure-sub"] === "string") opts.azure_subscription = flags["azure-sub"];
-    if (typeof flags["k8s-config"] === "string") opts.k8s_config = flags["k8s-config"];
+    // SECURITY: validate length and reject control characters before
+    // forwarding to the backend / printing locally (log forge, term inj).
+    if (typeof flags["aws-profile"] === "string") {
+      opts.aws_profile = validateOpaqueArg("--aws-profile", flags["aws-profile"], 256);
+    }
+    if (typeof flags["gcp-creds"] === "string") {
+      opts.gcp_creds = validateOpaqueArg("--gcp-creds", flags["gcp-creds"]);
+    }
+    if (typeof flags["azure-sub"] === "string") {
+      opts.azure_subscription = validateOpaqueArg("--azure-sub", flags["azure-sub"], 128);
+    }
+    if (typeof flags["k8s-config"] === "string") {
+      opts.k8s_config = validateOpaqueArg("--k8s-config", flags["k8s-config"]);
+    }
   }
 
   if (surface === "cicd") {

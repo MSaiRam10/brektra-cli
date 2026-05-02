@@ -141,9 +141,103 @@ This audit therefore focuses on what actually exists: a CLI that holds a bearer 
 - `npm audit --omit=dev` → 0 vulnerabilities.
 - No test suite exists in this repo (pre-existing); not introduced as part of this audit.
 
-## Counts
+## Counts (pass 1)
 
 - CRITICAL fixed: **4**
 - HIGH fixed: **8**
 - MEDIUM fixed: **9**
 - Total: **21**
+
+---
+
+# Pass 2 — deeper sweep
+
+Additional findings discovered on a second read of the codebase. All fixed in the same commit family.
+
+## CRITICAL — pass 2
+
+### P-C5. Prototype pollution via `~/.brektra/config.json`
+- **Where**: [src/config.ts](src/config.ts) `loadConfig` previously did `JSON.parse(raw)` directly.
+- **What was wrong**: a tampered config of the form `{"__proto__":{"api_url":"https://evil.com"}}` would pollute `Object.prototype.api_url`. Every later access to `cfg.api_url` (across the whole process) would read the attacker value, redirecting bearer tokens.
+- **Fix**: [src/safety.ts](src/safety.ts) `parseConfigSafely` parses with a JSON reviver that drops `__proto__`, `constructor`, `prototype` keys and then copies only the typed fields `api_key`/`api_url` onto a fresh plain object. Wired in [src/config.ts loadConfig](src/config.ts).
+
+### P-C6. Phishing via custom `BREKTRA_API_URL` / `cfg.api_url`
+- **Where**: [src/auth.ts:10-13](src/auth.ts) old `login()` path.
+- **What was wrong**: `login()` used `apiBase(cfg)` to build the URL it auto-opens in the browser. `apiBase` allows any HTTPS host, so `BREKTRA_API_URL=https://evil.com` would direct the user's browser to evil.com's fake api-keys page; the user would paste a real `bk_*` into it.
+- **Fix**: new `isCustomApiBase()` ([src/config.ts:69-82](src/config.ts)) detects override; [src/auth.ts:17-24](src/auth.ts) refuses to auto-open the browser when the base is overridden, prints the URL for explicit user inspection.
+
+### P-C7. `validateTarget` mobile regex was unanchored
+- **Where**: [src/scan.ts](src/scan.ts) old `/[A-Za-z0-9._\-/\\: ]{1,1024}/`.
+- **What was wrong**: `RegExp.test` of an unanchored class returns true if *any* substring matches. The mobile branch effectively accepted every string (only the global control-char check at the top of the function caught anything). Adversarial paths could be silently accepted for display/forward.
+- **Fix**: anchored to `^…$` ([src/scan.ts](src/scan.ts) mobile branch).
+
+## HIGH — pass 2
+
+### P-H9. Server-supplied IDs embedded in fetch URLs without `encodeURIComponent`
+- **Where**: [src/api.ts](src/api.ts) `getCiScan(id)`, `getPlaybook(id)`, `getComplianceExport(id)`.
+- **What was wrong**: `id` returned by the server was concatenated into the URL: `\`/api/v1/scans/ci/${id}\``. A compromised backend could return `id: "../admin/secrets"` and the CLI would happily reissue the bearer at a *different* authenticated endpoint of the same origin.
+- **Fix**: new `safeServerId()` ([src/safety.ts](src/safety.ts)) shape-checks `^[A-Za-z0-9_\-]{1,128}$`; URLs use `encodeURIComponent` after the shape check. Same applies to the `artifact_id` returned by `uploadMobileArtifact` before it's embedded in the resolved target ([src/scan.ts](src/scan.ts) mobile dispatch).
+
+### P-H10. `saveConfig` did not reset mode on existing files
+- **Where**: [src/config.ts saveConfig](src/config.ts).
+- **What was wrong**: Node's `fs.writeFile({mode})` only honors mode on *creation*. If `~/.brektra/config.json` existed with permissive bits (e.g. left over from an earlier process run), `saveConfig` overwrote contents but kept the loose mode — bearer key world-readable.
+- **Fix**: write to a randomly-named tempfile via `fs.open(O_CREAT|O_EXCL|O_WRONLY, 0o600)`, `chmod 0o600` post-open, then atomic `rename` over the target ([src/config.ts saveConfig](src/config.ts)). Also closes a partial-write race on crash mid-write.
+
+### P-H11. TOCTOU between `lstat` and `readFile` in `uploadMobileArtifact`
+- **Where**: [src/api.ts uploadMobileArtifact](src/api.ts).
+- **What was wrong**: a same-machine attacker could swap the file between the `lstat` (which checks for symlink) and the `readFile` call, causing a sensitive file to be read and uploaded.
+- **Fix**: open with `O_RDONLY | O_NOFOLLOW` (POSIX), then stat the file *descriptor* and read from the same descriptor — every check operates on the same inode ([src/api.ts uploadMobileArtifact](src/api.ts)).
+
+## MEDIUM — pass 2
+
+### P-M10. Cloud/CI flag values not length/control-char checked
+- **Where**: `--aws-profile`, `--gcp-creds`, `--azure-sub`, `--k8s-config` in [src/scan.ts](src/scan.ts).
+- **Fix**: `validateOpaqueArg` ([src/safety.ts](src/safety.ts)) enforces a max length and rejects `\x00–\x1f\x7f`. Lengths chosen per arg.
+
+### P-M11. URL `userinfo` (user:pass@host) leaked through targets
+- **Where**: every `--target` / `scan <surface> <target>` / `ci scan <target>` path.
+- **What was wrong**: `https://user:pass@host` is preserved by the `URL` parser; the userinfo would be sent in the JSON body to the backend, printed to the console, and (via `open`) handed to the OS shell.
+- **Fix**: refuse userinfo at validation time in [src/scan.ts validateTarget](src/scan.ts), [src/atlas.ts](src/atlas.ts), [src/ci.ts](src/ci.ts); also defensive `stripUserInfo()` ([src/safety.ts](src/safety.ts)) before display/forward.
+
+### P-M12. Local-scan response excerpt could carry ANSI escapes
+- **Where**: [src/local-scan.ts findingProof excerpt](src/local-scan.ts).
+- **What was wrong**: `bodyText.slice(0, 200)` from a hostile local app was rendered raw. The renderer in [src/render.ts findingProof](src/render.ts) trusts callers, so the excerpt could forge log lines.
+- **Fix**: `sanitizeForDisplay` on the excerpt before passing to the renderer.
+
+### P-M13. Mobile upload `r.info` line printed raw target
+- **Where**: [src/scan.ts dispatch mobile branch](src/scan.ts).
+- **Fix**: target stripped of userinfo and run through `sanitizeForDisplay` before display.
+
+### P-M14. Top-level error handler did not redact bearer-shaped tokens
+- **Where**: [src/index.ts main().catch](src/index.ts).
+- **What was wrong**: `redactErrorBody` only ran inside `jsonOrThrow`. An error thrown elsewhere (e.g. a custom string with a bearer token) would bypass redaction.
+- **Fix**: top-level handler now runs `redactErrorBody` on `err.message` and `err.stack`.
+
+### P-M15. `silentPrompt` had no input length cap
+- **Where**: [src/auth.ts silentPrompt](src/auth.ts).
+- **Fix**: cap at 512 chars; further input is dropped with a graceful finish.
+
+### P-M16. `saveConfig` not atomic
+- **Where**: [src/config.ts saveConfig](src/config.ts) — same fix path as P-H10. Tempfile + atomic rename eliminates partial-write corruption.
+
+### P-M17. `runAtlas` polling had no timeout and never bailed on persistent error
+- **Where**: [src/atlas.ts](src/atlas.ts).
+- **Fix**: 15-minute hard timeout on the poll loop, matching the scan dispatcher.
+
+### P-M18. `runAtlas` printed unvalidated server `replay_url`
+- **Where**: [src/atlas.ts r.summary](src/atlas.ts).
+- **Fix**: `URL` parse + http(s) scheme requirement, sanitize for display, drop silently on failure (mirrors `emitSummary` in [src/scan.ts](src/scan.ts)).
+
+## Counts (pass 2)
+
+- CRITICAL fixed: **3** (P-C5, P-C6, P-C7)
+- HIGH fixed: **3** (P-H9, P-H10, P-H11)
+- MEDIUM fixed: **9** (P-M10 – P-M18)
+- Total pass 2: **15**
+
+## Combined counts
+
+- CRITICAL: **7**
+- HIGH: **11**
+- MEDIUM: **18**
+- Total: **36**
